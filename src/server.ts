@@ -9,8 +9,8 @@
 import {
 	createConnection, IConnection,
 	TextDocuments, TextDocument, InitializeParams, InitializeResult, NotificationType, RequestType,
-	DocumentFormattingRequest, Disposable, Range, IPCMessageReader, IPCMessageWriter, DiagnosticSeverity, Position,
-	Proposed, ProposedFeatures, CompletionList
+	DocumentFormattingRequest, Disposable, Position,
+	ProposedFeatures, CompletionList
 } from 'vscode-languageserver';
 
 import { xhr, XHRResponse, configure as configureHttpRequests, getErrorStatusDescription } from 'request-light';
@@ -153,14 +153,6 @@ let schemaRequestService = (uri: string): Thenable<string> => {
 			return <Thenable<string>>connection.sendRequest(CustomSchemaContentRequest.type, uri);
 		}
 	}
-	if (uri.indexOf('//schema.management.azure.com/') !== -1) {
-		connection.telemetry.logEvent({
-			key: 'json.schema',
-			value: {
-				schemaURL: uri
-			}
-		});
-	}
 	let headers = { 'Accept-Encoding': 'gzip, deflate' };
 	return xhr({ url: uri, followRedirects: 5, headers }).then(response => {
 		return response.responseText;
@@ -169,13 +161,12 @@ let schemaRequestService = (uri: string): Thenable<string> => {
 	});
 };
 
-export let KUBERNETES_SCHEMA_URL = "https://gist.githubusercontent.com/JPinkney/ccaf3909ef811e5657ca2e2e1fa05d76/raw/f85e51bfb67fdb99ab7653c2953b60087cc871ea/openshift_schema_all.json";
-export let KEDGE_SCHEMA_URL = "https://raw.githubusercontent.com/kedgeproject/json-schema/master/master/kedge-json-schema.json";
 export let customLanguageService = getCustomLanguageService(schemaRequestService, workspaceContext, []);
 
 // The settings interface describes the server relevant settings part
 interface Settings {
-	yaml: {
+	serverlessIDE: {
+		templatePattern: string;
 		format: CustomFormatterOptions & {
 			enable: boolean;
 		};
@@ -197,6 +188,7 @@ interface JSONSchemaSettings {
 	schema?: JSONSchema;
 }
 
+let yamlTemplatePattern = void 0;
 let yamlConfigurationSettings: JSONSchemaSettings[] = void 0;
 let schemaAssociations: ISchemaAssociations = void 0;
 let formatterRegistration: Thenable<Disposable> = null;
@@ -217,24 +209,32 @@ connection.onDidChangeConfiguration((change) => {
 	var settings = <Settings>change.settings;
 	configureHttpRequests(settings.http && settings.http.proxy, settings.http && settings.http.proxyStrictSSL);
 
+	console.log(`>>> settings: ${JSON.stringify(settings, null, 2)}`)
+
 	specificValidatorPaths = [];
-	if (settings.yaml) {
-		yamlConfigurationSettings = settings.yaml.schemas;
-		yamlShouldValidate = settings.yaml.validate;
-		yamlShouldHover = settings.yaml.hover;
-		yamlShouldCompletion = settings.yaml.completion;
-		customTags = settings.yaml.customTags ? settings.yaml.customTags : [];
-		if (settings.yaml.format) {
+	if (settings.serverlessIDE) {
+		yamlTemplatePattern = settings.serverlessIDE.templatePattern
+		yamlConfigurationSettings = settings.serverlessIDE.schemas;
+		yamlShouldValidate = settings.serverlessIDE.validate;
+		yamlShouldHover = settings.serverlessIDE.hover;
+		yamlShouldCompletion = settings.serverlessIDE.completion;
+		customTags = settings.serverlessIDE.customTags ? settings.serverlessIDE.customTags : [];
+		if (settings.serverlessIDE.format) {
 			yamlFormatterSettings = {
-				singleQuote: settings.yaml.format.singleQuote || false,
-				proseWrap: settings.yaml.format.proseWrap || "preserve"
+				singleQuote: settings.serverlessIDE.format.singleQuote || false,
+				proseWrap: settings.serverlessIDE.format.proseWrap || "preserve"
 			};
-			if (settings.yaml.format.bracketSpacing === false) {
+			if (settings.serverlessIDE.format.bracketSpacing === false) {
 				yamlFormatterSettings.bracketSpacing = false;
 			}
 		}		
 	}
-	schemaConfigurationSettings = [];
+
+	// add default schema
+	schemaConfigurationSettings = [{
+		fileMatch: [`/${yamlTemplatePattern}`],
+		url: 'https://raw.githubusercontent.com/awslabs/goformation/master/schema/sam.schema.json'
+	}];
 
 	for(let url in yamlConfigurationSettings){
 		let globPattern = yamlConfigurationSettings[url];
@@ -251,7 +251,7 @@ connection.onDidChangeConfiguration((change) => {
 
 	// dynamically enable & disable the formatter
 	if (clientDynamicRegisterSupport) {
-		let enableFormatter = settings && settings.yaml && settings.yaml.format && settings.yaml.format.enable;
+		let enableFormatter = settings && settings.serverlessIDE && settings.serverlessIDE.format && settings.serverlessIDE.format.enable;
 		if (enableFormatter) {
 			if (!formatterRegistration) {
 				formatterRegistration = connection.client.register(DocumentFormattingRequest.type, { documentSelector: [{ language: 'yaml' }] });
@@ -365,48 +365,13 @@ function updateConfiguration() {
 }
 
 function configureSchemas(uri, fileMatch, schema, languageSettings){
-
-	if(uri.toLowerCase().trim() === "kubernetes"){
-		uri = KUBERNETES_SCHEMA_URL;
-	}
-	if(uri.toLowerCase().trim() === "kedge"){
-		uri = KEDGE_SCHEMA_URL;
-	}
-
 	if(schema === null){
 		languageSettings.schemas.push({ uri, fileMatch: fileMatch });
 	}else{
 		languageSettings.schemas.push({ uri, fileMatch: fileMatch, schema: schema });
 	}
 
-	if(fileMatch.constructor === Array && uri === KUBERNETES_SCHEMA_URL){
-		fileMatch.forEach((url) => {
-			specificValidatorPaths.push(url);
-		});
-	}else if(uri === KUBERNETES_SCHEMA_URL){
-		specificValidatorPaths.push(fileMatch);
-	}
-
 	return languageSettings;
-}
-
-function setKubernetesParserOption(jsonDocuments: JSONDocument[], option: boolean){
-	for(let jsonDoc in jsonDocuments){
-		jsonDocuments[jsonDoc].configureSettings({
-			isKubernetes: option
-		});
-	}
-}
-
-function isKubernetes(textDocument){
-	for(let path in specificValidatorPaths){
-		let globPath = specificValidatorPaths[path];
-		let fpa = new FilePatternAssociation(globPath);
-		if(fpa.matchesPattern(textDocument.uri)){
-			return true;
-		}
-	}
-	return false;
 }
 
 documents.onDidChangeContent((change) => {
@@ -449,7 +414,6 @@ function validateTextDocument(textDocument: TextDocument): void {
 	}
 
 	let yamlDocument = parseYAML(textDocument.getText(), customTags);
-	isKubernetes(textDocument) ? setKubernetesParserOption(yamlDocument.documents, true) : setKubernetesParserOption(yamlDocument.documents, false);
 	customLanguageService.doValidation(textDocument, yamlDocument).then(function(diagnosticResults){
 
 		let diagnostics = [];
@@ -490,7 +454,6 @@ connection.onCompletion(textDocumentPosition =>  {
 	let completionFix = completionHelper(textDocument, textDocumentPosition.position);
 	let newText = completionFix.newText;
 	let jsonDocument = parseYAML(newText);
-	isKubernetes(textDocument) ? setKubernetesParserOption(jsonDocument.documents, true) : setKubernetesParserOption(jsonDocument.documents, false);
 	return customLanguageService.doComplete(textDocument, textDocumentPosition.position, jsonDocument);
 });
 
@@ -565,7 +528,6 @@ connection.onHover(textDocumentPositionParams => {
 	}
 
 	let jsonDocument = parseYAML(document.getText());
-	isKubernetes(document) ? setKubernetesParserOption(jsonDocument.documents, true) : setKubernetesParserOption(jsonDocument.documents, false);
 	return customLanguageService.doHover(document, textDocumentPositionParams.position, jsonDocument);
 });
 
