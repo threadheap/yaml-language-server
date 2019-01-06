@@ -49,9 +49,6 @@ export class ASTNode {
 		this.start = start;
 		this.end = end;
 		this.parent = parent;
-		this.parserSettings = {
-			isKubernetes: false
-		};
 	}
 
 	public setParserSettings(parserSettings: LanguageSettings){
@@ -214,14 +211,12 @@ export class ASTNode {
 				}
 				if (!bestMatch) {
 					bestMatch = { schema: subSchema, validationResult: subValidationResult, matchingSchemas: subMatchingSchemas };
-				} else if(this.parserSettings.isKubernetes) {
-					bestMatch = alternativeComparison(subValidationResult, bestMatch, subSchema, subMatchingSchemas);
 				} else {
 					bestMatch = genericComparison(maxOneMatch, subValidationResult, bestMatch, subSchema, subMatchingSchemas);
 				}
 			});
 
-			if (matches.length > 1 && maxOneMatch && !this.parserSettings.isKubernetes) {
+			if (matches.length > 1 && maxOneMatch) {
 				validationResult.problems.push({
 					location: { start: this.start, end: this.start + 1 },
 					severity: ProblemSeverity.Warning,
@@ -1013,20 +1008,6 @@ export class JSONDocument {
 		}
 		return validationResult.problems;
 	}
-}
-
-//Alternative comparison is specifically used by the kubernetes/openshift schema but may lead to better results then genericComparison depending on the schema
-function alternativeComparison(subValidationResult, bestMatch, subSchema, subMatchingSchemas){
-	let compareResult = subValidationResult.compareKubernetes(bestMatch.validationResult);
-	if (compareResult > 0) {
-		// our node is the best matching so far
-		bestMatch = { schema: subSchema, validationResult: subValidationResult, matchingSchemas: subMatchingSchemas };
-	} else if (compareResult === 0) {
-		// there's already a best matching but we are as good
-		bestMatch.matchingSchemas.merge(subMatchingSchemas);
-		bestMatch.validationResult.mergeEnumValues(subValidationResult);
-	}
-	return bestMatch;
 }
 
 //genericComparison tries to find the best matching schema using a generic comparison

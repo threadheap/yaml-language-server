@@ -9,8 +9,7 @@
 import {
 	createConnection, IConnection,
 	TextDocuments, TextDocument, InitializeParams, InitializeResult, NotificationType, RequestType,
-	DocumentFormattingRequest, Disposable, Position,
-	ProposedFeatures, CompletionList
+	Position, ProposedFeatures, CompletionList
 } from 'vscode-languageserver';
 
 import { xhr, XHRResponse, configure as configureHttpRequests, getErrorStatusDescription } from 'request-light';
@@ -22,9 +21,8 @@ import Strings = require('./languageservice/utils/strings');
 import { getLineOffsets, removeDuplicatesObj } from './languageservice/utils/arrUtils';
 import { getLanguageService as getCustomLanguageService, LanguageSettings, CustomFormatterOptions } from './languageservice/yamlLanguageService';
 import * as nls from 'vscode-nls';
-import { FilePatternAssociation, CustomSchemaProvider } from './languageservice/services/jsonSchemaService';
+import { CustomSchemaProvider } from './languageservice/services/jsonSchemaService';
 import { parse as parseYAML } from './languageservice/parser/yamlParser';
-import { JSONDocument } from './languageservice/parser/jsonParser';
 import { JSONSchema } from './languageservice/jsonSchema';
 nls.config(<any>process.env['VSCODE_NLS_CONFIG']);
 
@@ -74,7 +72,6 @@ let documents: TextDocuments = new TextDocuments();
 // for open, change and close text document events
 documents.listen(connection);
 
-let clientDynamicRegisterSupport = false;
 let hasWorkspaceFolderCapability = false;
 
 // After the server has started the client sends an initilize request. The server receives
@@ -96,7 +93,6 @@ connection.onInitialize((params: InitializeParams): InitializeResult => {
 	}
 
 	hasWorkspaceFolderCapability = capabilities.workspace && !!capabilities.workspace.workspaceFolders;
-	clientDynamicRegisterSupport = hasClientCapability('textDocument', 'formatting', 'dynamicRegistration');
 	return {
 		capabilities: {
 			textDocumentSync: documents.syncKind,
@@ -188,18 +184,10 @@ interface JSONSchemaSettings {
 	schema?: JSONSchema;
 }
 
-let yamlTemplatePattern = void 0;
-let yamlConfigurationSettings: JSONSchemaSettings[] = void 0;
+let yamlTemplatePattern: string = void 0;
 let schemaAssociations: ISchemaAssociations = void 0;
-let formatterRegistration: Thenable<Disposable> = null;
-let specificValidatorPaths = [];
 let schemaConfigurationSettings = [];
 let yamlShouldValidate = true;
-let yamlFormatterSettings = {
-	singleQuote: false,
-	bracketSpacing: true,
-	proseWrap: "preserve"
-} as CustomFormatterOptions;
 let yamlShouldHover = true;
 let yamlShouldCompletion = true;
 let schemaStoreSettings = [];
@@ -209,108 +197,25 @@ connection.onDidChangeConfiguration((change) => {
 	var settings = <Settings>change.settings;
 	configureHttpRequests(settings.http && settings.http.proxy, settings.http && settings.http.proxyStrictSSL);
 
-	console.log(`>>> settings: ${JSON.stringify(settings, null, 2)}`)
-
-	specificValidatorPaths = [];
 	if (settings.serverlessIDE) {
 		yamlTemplatePattern = settings.serverlessIDE.templatePattern
-		yamlConfigurationSettings = settings.serverlessIDE.schemas;
 		yamlShouldValidate = settings.serverlessIDE.validate;
 		yamlShouldHover = settings.serverlessIDE.hover;
 		yamlShouldCompletion = settings.serverlessIDE.completion;
-		customTags = settings.serverlessIDE.customTags ? settings.serverlessIDE.customTags : [];
-		if (settings.serverlessIDE.format) {
-			yamlFormatterSettings = {
-				singleQuote: settings.serverlessIDE.format.singleQuote || false,
-				proseWrap: settings.serverlessIDE.format.proseWrap || "preserve"
-			};
-			if (settings.serverlessIDE.format.bracketSpacing === false) {
-				yamlFormatterSettings.bracketSpacing = false;
-			}
-		}		
+		customTags = settings.serverlessIDE.customTags ? settings.serverlessIDE.customTags : [];	
 	}
 
 	// add default schema
 	schemaConfigurationSettings = [{
-		fileMatch: [`/${yamlTemplatePattern}`],
-		url: 'https://raw.githubusercontent.com/awslabs/goformation/master/schema/sam.schema.json'
+		fileMatch: [yamlTemplatePattern],
+		url: 'https://raw.githubusercontent.com/threadheap/aws-sam-json-schema/master/schema.json'
 	}];
 
-	for(let url in yamlConfigurationSettings){
-		let globPattern = yamlConfigurationSettings[url];
-		let schemaObj = {
-			"fileMatch": Array.isArray(globPattern) ? globPattern : [globPattern],
-			"url": url
-		}
-		schemaConfigurationSettings.push(schemaObj);
-	}
-
-	setSchemaStoreSettingsIfNotSet();
-
 	updateConfiguration();
-
-	// dynamically enable & disable the formatter
-	if (clientDynamicRegisterSupport) {
-		let enableFormatter = settings && settings.serverlessIDE && settings.serverlessIDE.format && settings.serverlessIDE.format.enable;
-		if (enableFormatter) {
-			if (!formatterRegistration) {
-				formatterRegistration = connection.client.register(DocumentFormattingRequest.type, { documentSelector: [{ language: 'yaml' }] });
-			}
-		} else if (formatterRegistration) {
-			formatterRegistration.then(r => r.dispose());
-			formatterRegistration = null;
-		}
-	}
 });
-
-function setSchemaStoreSettingsIfNotSet(){
-	if(schemaStoreSettings.length === 0){
-		getSchemaStoreMatchingSchemas().then(schemaStore => {
-			schemaStoreSettings = schemaStore.schemas;
-			updateConfiguration();
-		});
-	}
-}
-
-function getSchemaStoreMatchingSchemas(){
-
-	return xhr({ url: "http://schemastore.org/api/json/catalog.json" }).then(response => {
-
-		let languageSettings= {
-			schemas: []
-		};
-
-		let schemas = JSON.parse(response.responseText);
-		for(let schemaIndex in schemas.schemas){
-
-			let schema = schemas.schemas[schemaIndex];
-			if(schema && schema.fileMatch){
-
-				for(let fileMatch in schema.fileMatch){
-					let currFileMatch = schema.fileMatch[fileMatch];
-
-					if(currFileMatch.indexOf('.yml') !== -1 || currFileMatch.indexOf('.yaml') !== -1){
-						languageSettings.schemas.push({ uri: schema.url, fileMatch: [currFileMatch] });
-					}
-
-				}
-
-			}
-
-		}
-
-		return languageSettings;
-
-	}, (error: XHRResponse) => {
-		throw error;
-	});
-
-}
 
 connection.onNotification(SchemaAssociationNotification.type, associations => {
 	schemaAssociations = associations;
-	specificValidatorPaths = [];
-	setSchemaStoreSettingsIfNotSet();
 	updateConfiguration();
 });
 
@@ -540,16 +445,6 @@ connection.onDocumentSymbol(documentSymbolParams => {
 
 	let jsonDocument = parseYAML(document.getText());
 	return customLanguageService.findDocumentSymbols(document, jsonDocument);
-});
-
-connection.onDocumentFormatting(formatParams => {
-	let document = documents.get(formatParams.textDocument.uri);
-
-	if(!document){
-		return;
-	}
-
-	return customLanguageService.doFormat(document, yamlFormatterSettings);
 });
 
 connection.listen();

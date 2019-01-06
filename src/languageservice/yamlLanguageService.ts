@@ -11,7 +11,6 @@ import { YAMLDocumentSymbols } from './services/documentSymbols';
 import { YAMLCompletion } from "./services/yamlCompletion";
 import { YAMLHover } from "./services/yamlHover";
 import { YAMLValidation } from "./services/yamlValidation";
-import { format } from './services/yamlFormatter';
 
 export interface LanguageSettings {
   validate?: boolean; //Setting for whether we want to validate the schema
@@ -107,7 +106,6 @@ export interface LanguageService {
   findDocumentSymbols(document: TextDocument, doc);
   doResolve(completionItem);
   resetSchema(uri: string): boolean;
-  doFormat(document: TextDocument, options: CustomFormatterOptions);
 }
 
 export function getLanguageService(schemaRequestService, workspaceContext, contributions, promiseConstructor?): LanguageService {
@@ -141,7 +139,6 @@ export function getLanguageService(schemaRequestService, workspaceContext, contr
       doValidation: yamlValidation.doValidation.bind(yamlValidation),
       doHover: hover.doHover.bind(hover),
       findDocumentSymbols: yamlDocumentSymbols.findDocumentSymbols.bind(yamlDocumentSymbols),
-      resetSchema: (uri: string) => schemaService.onResourceChange(uri),
-      doFormat: format
+      resetSchema: (uri: string) => schemaService.onResourceChange(uri)
   }
 }
